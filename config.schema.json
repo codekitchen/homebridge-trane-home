@@ -1,5 +1,5 @@
 {
-  "pluginAlias": "ExampleHomebridgePlugin",
+  "pluginAlias": "TraneHome",
   "pluginType": "platform",
   "singular": true,
   "schema": {
