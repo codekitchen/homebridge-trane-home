@@ -10,6 +10,21 @@
         "type": "string",
         "required": true,
         "default": "Example Dynamic Platform"
+      },
+      "houseId": {
+        "title": "House ID",
+        "type": "string",
+        "required": true
+      },
+      "mobileId": {
+        "title": "Mobile App ID",
+        "type": "string",
+        "required": true
+      },
+      "apiKey": {
+        "title": "Mobile API Key",
+        "type": "string",
+        "required": true
       }
     }
   }
