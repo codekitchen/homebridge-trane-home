@@ -2,6 +2,8 @@ import { API, DynamicPlatformPlugin, Logger, PlatformAccessory, PlatformConfig, 
 
 import { PLATFORM_NAME, PLUGIN_NAME } from './settings';
 import { MobileClient } from './mobileClient';
+import { ResetPromise, throttle } from './throttle';
+import { HouseStatus } from './houseStatus';
 
 const MODE_MAP = {
   'OFF': 0,
@@ -29,6 +31,7 @@ export class Platform implements DynamicPlatformPlugin {
   public readonly accessories: PlatformAccessory[] = [];
 
   _client: MobileClient;
+  _getStatus: ResetPromise<HouseStatus>;
 
   constructor(
     public readonly log: Logger,
@@ -38,8 +41,12 @@ export class Platform implements DynamicPlatformPlugin {
     this.log.debug('Finished initializing platform:', this.config.name);
     this._client = new MobileClient(config.houseId, config.mobileId, config.apiKey);
 
+    this._getStatus = throttle(() => {
+      this.log.debug('getting status');
+      return this._client.status();
+    }, 5_000);
+
     this.api.on('didFinishLaunching', () => {
-      // setInterval(() => this.updateDevices(), 5_000);
       this.discoverDevices();
     });
   }
@@ -55,8 +62,13 @@ export class Platform implements DynamicPlatformPlugin {
     this.accessories.push(accessory);
   }
 
+  async houseStatus() {
+    // TODO: reset status on POST to refresh
+    return this._getStatus();
+  }
+
   async thermostat(id: number) {
-    const ret = await this._client.thermostat(id);
+    const ret = (await this.houseStatus()).thermostat(id);
     if (!ret) {
       throw new Error(`thermostat not found: ${id}`);
     }
@@ -64,7 +76,7 @@ export class Platform implements DynamicPlatformPlugin {
   }
 
   async zone(tid: number, zid: number) {
-    const ret = await (await this.thermostat(tid)).zone(zid);
+    const ret = (await this.thermostat(tid)).zone(zid);
     if (!ret) {
       throw new Error(`zone not found: ${zid} for thermostat: ${tid}`);
     }
@@ -72,7 +84,7 @@ export class Platform implements DynamicPlatformPlugin {
   }
 
   async discoverDevices() {
-    const thermostats = await this._client.thermostats();
+    const thermostats = (await this.houseStatus()).thermostats();
 
     for (const t of thermostats) {
       if (t.outdoorTemperature !== undefined) {
@@ -95,7 +107,7 @@ export class Platform implements DynamicPlatformPlugin {
         const uuid = this.api.hap.uuid.generate(`${t.id}-zone-${z.id}`);
         let acc = this.accessories.find(a => a.UUID === uuid);
         if (!acc) {
-          acc = new this.api.platformAccessory(z.name == 'NativeZone' ? t.name : z.name, uuid);
+          acc = new this.api.platformAccessory(z.name === 'NativeZone' ? t.name : z.name, uuid);
           acc.getService(this.Service.AccessoryInformation)!
             .setCharacteristic(this.Characteristic.Manufacturer, 'Default-Manufacturer')
             .setCharacteristic(this.Characteristic.Model, 'Default-Model')
@@ -116,7 +128,18 @@ export class Platform implements DynamicPlatformPlugin {
             return zone.setpointHeat;
           }
           return 23.89; // TODO: what to do when in another mode?
-        });
+        })
+          .onSet(async (val) => {
+            const zone = await this.zone(t.id, z.id);
+            if (zone.mode === 'COOL') {
+              this.log.debug('setting cooling setpoint to', val);
+              await this._client.setCoolSetpoint(zone, Number(val));
+            }
+            if (zone.mode === 'HEAT') {
+              this.log.debug('setting heating setpoint to', val);
+              await this._client.setHeatSetpoint(zone, Number(val));
+            }
+          });
         thermo.getCharacteristic(this.Characteristic.CurrentHeatingCoolingState).onGet(
           () => this.zone(t.id, z.id).then(z => STATE_MAP[z.status] || 0));
         thermo.getCharacteristic(this.Characteristic.TargetHeatingCoolingState).onGet(
@@ -133,15 +156,15 @@ export class Platform implements DynamicPlatformPlugin {
         thermo.getCharacteristic(this.Characteristic.TargetHeatingCoolingState).onSet(async val => {
           const setVal = MODE_INV_MAP[Number(val)];
           this.log.debug('setting target state to', setVal);
-          await z.setMode(setVal);
+          await this._client.setMode(z, setVal);
         });
         thermo.getCharacteristic(this.Characteristic.CoolingThresholdTemperature).onSet(async val => {
           this.log.debug('setting cooling setpoint to', val);
-          await z.setCoolSetpoint(Number(val));
+          await this._client.setCoolSetpoint(z, Number(val));
         });
         thermo.getCharacteristic(this.Characteristic.HeatingThresholdTemperature).onSet(async val => {
           this.log.debug('setting heating setpoint to', val);
-          await z.setHeatSetpoint(Number(val));
+          await this._client.setHeatSetpoint(z, Number(val));
         });
       }
     }
