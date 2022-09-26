@@ -3,7 +3,7 @@ import { API, DynamicPlatformPlugin, Logger, PlatformAccessory, PlatformConfig, 
 import { PLATFORM_NAME, PLUGIN_NAME } from './settings';
 import { MobileClient } from './mobileClient';
 import { ResetPromise, throttle } from './throttle';
-import { HouseStatus } from './houseStatus';
+import { HouseStatus, Thermostat, Zone } from './houseStatus';
 
 const MODE_MAP = {
   'OFF': 0,
@@ -88,85 +88,88 @@ export class Platform implements DynamicPlatformPlugin {
 
     for (const t of thermostats) {
       if (t.outdoorTemperature !== undefined) {
-        const uuid = this.api.hap.uuid.generate(`${t.id}-outdoorTemp`);
-        let acc = this.accessories.find(a => a.UUID === uuid);
-        if (!acc) {
-          acc = new this.api.platformAccessory('Outdoor Temp', uuid);
-          acc.getService(this.Service.AccessoryInformation)!
-            .setCharacteristic(this.Characteristic.Manufacturer, 'Default-Manufacturer')
-            .setCharacteristic(this.Characteristic.Model, 'Default-Model')
-            .setCharacteristic(this.Characteristic.SerialNumber, 'Default-Serial');
-          this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [acc]);
-          this.accessories.push(acc);
-        }
-        const temp = acc.getService(this.Service.TemperatureSensor) || acc.addService(this.Service.TemperatureSensor);
-        temp.getCharacteristic(this.Characteristic.CurrentTemperature).onGet(() => this.thermostat(t.id).then(t => t.outdoorTemperature!));
+        this._findOrCreateOutdoorTempSensor(t);
       }
 
       for (const z of t.zones) {
-        const uuid = this.api.hap.uuid.generate(`${t.id}-zone-${z.id}`);
-        let acc = this.accessories.find(a => a.UUID === uuid);
-        if (!acc) {
-          acc = new this.api.platformAccessory(z.name === 'NativeZone' ? t.name : z.name, uuid);
-          acc.getService(this.Service.AccessoryInformation)!
-            .setCharacteristic(this.Characteristic.Manufacturer, 'Default-Manufacturer')
-            .setCharacteristic(this.Characteristic.Model, 'Default-Model')
-            .setCharacteristic(this.Characteristic.SerialNumber, 'Default-Serial');
-          this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [acc]);
-          this.accessories.push(acc);
-        }
-
-        const thermo = acc.getService(this.Service.Thermostat) || acc.addService(this.Service.Thermostat);
-
-        thermo.getCharacteristic(this.Characteristic.CurrentTemperature).onGet(() => this.zone(t.id, z.id).then(z => z.currentTemp));
-        thermo.getCharacteristic(this.Characteristic.TargetTemperature).onGet(async () => {
-          const zone = await this.zone(t.id, z.id);
-          if (zone.mode === 'COOL') {
-            return zone.setpointCool;
-          }
-          if (zone.mode === 'HEAT') {
-            return zone.setpointHeat;
-          }
-          return 23.89; // TODO: what to do when in another mode?
-        })
-          .onSet(async (val) => {
-            const zone = await this.zone(t.id, z.id);
-            if (zone.mode === 'COOL') {
-              this.log.debug('setting cooling setpoint to', val);
-              await this._client.setCoolSetpoint(zone, Number(val));
-            }
-            if (zone.mode === 'HEAT') {
-              this.log.debug('setting heating setpoint to', val);
-              await this._client.setHeatSetpoint(zone, Number(val));
-            }
-          });
-        thermo.getCharacteristic(this.Characteristic.CurrentHeatingCoolingState).onGet(
-          () => this.zone(t.id, z.id).then(z => STATE_MAP[z.status] || 0));
-        thermo.getCharacteristic(this.Characteristic.TargetHeatingCoolingState).onGet(
-          () => this.zone(t.id, z.id).then(z => MODE_MAP[z.mode]));
-        thermo.getCharacteristic(this.Characteristic.CoolingThresholdTemperature).onGet(
-          () => this.zone(t.id, z.id).then(z => z.setpointCool));
-        thermo.getCharacteristic(this.Characteristic.HeatingThresholdTemperature).onGet(
-          () => this.zone(t.id, z.id).then(z => z.setpointHeat));
-        if (t.indoorHumidity !== undefined) {
-          thermo.getCharacteristic(this.Characteristic.CurrentRelativeHumidity).onGet(
-            () => this.thermostat(t.id).then(t => t.indoorHumidity!));
-        }
-
-        thermo.getCharacteristic(this.Characteristic.TargetHeatingCoolingState).onSet(async val => {
-          const setVal = MODE_INV_MAP[Number(val)];
-          this.log.debug('setting target state to', setVal);
-          await this._client.setMode(z, setVal);
-        });
-        thermo.getCharacteristic(this.Characteristic.CoolingThresholdTemperature).onSet(async val => {
-          this.log.debug('setting cooling setpoint to', val);
-          await this._client.setCoolSetpoint(z, Number(val));
-        });
-        thermo.getCharacteristic(this.Characteristic.HeatingThresholdTemperature).onSet(async val => {
-          this.log.debug('setting heating setpoint to', val);
-          await this._client.setHeatSetpoint(z, Number(val));
-        });
+        this._findOrCreateThermostat(t, z);
       }
     }
+  }
+
+  private _findOrCreateThermostat(t: Thermostat, z: Zone) {
+    const acc = this._findOrCreateAccessory(`${t.id}-zone-${z.id}`, z.name === 'NativeZone' ? t.name : z.name);
+    const thermo = acc.getService(this.Service.Thermostat) || acc.addService(this.Service.Thermostat);
+
+    thermo.getCharacteristic(this.Characteristic.CurrentTemperature).onGet(() => this.zone(t.id, z.id).then(z => z.currentTemp));
+    thermo.getCharacteristic(this.Characteristic.TargetTemperature).onGet(async () => {
+      const zone = await this.zone(t.id, z.id);
+      if (zone.mode === 'COOL') {
+        return zone.setpointCool;
+      }
+      if (zone.mode === 'HEAT') {
+        return zone.setpointHeat;
+      }
+      return 23.89; // TODO: what to do when in another mode?
+    })
+      .onSet(async (val) => {
+        const zone = await this.zone(t.id, z.id);
+        if (zone.mode === 'COOL') {
+          this.log.debug('setting cooling setpoint to', val);
+          await this._client.setCoolSetpoint(zone, Number(val));
+        }
+        if (zone.mode === 'HEAT') {
+          this.log.debug('setting heating setpoint to', val);
+          await this._client.setHeatSetpoint(zone, Number(val));
+        }
+      });
+    thermo.getCharacteristic(this.Characteristic.CurrentHeatingCoolingState).onGet(
+      () => this.zone(t.id, z.id).then(z => STATE_MAP[z.status] || 0));
+    thermo.getCharacteristic(this.Characteristic.TargetHeatingCoolingState).onGet(
+      () => this.zone(t.id, z.id).then(z => MODE_MAP[z.mode]));
+    thermo.getCharacteristic(this.Characteristic.CoolingThresholdTemperature).onGet(
+      () => this.zone(t.id, z.id).then(z => z.setpointCool));
+    thermo.getCharacteristic(this.Characteristic.HeatingThresholdTemperature).onGet(
+      () => this.zone(t.id, z.id).then(z => z.setpointHeat));
+    if (t.indoorHumidity !== undefined) {
+      thermo.getCharacteristic(this.Characteristic.CurrentRelativeHumidity).onGet(
+        () => this.thermostat(t.id).then(t => t.indoorHumidity!));
+    }
+
+    thermo.getCharacteristic(this.Characteristic.TargetHeatingCoolingState).onSet(async (val) => {
+      const setVal = MODE_INV_MAP[Number(val)];
+      this.log.debug('setting target state to', setVal);
+      await this._client.setMode(z, setVal);
+    });
+    thermo.getCharacteristic(this.Characteristic.CoolingThresholdTemperature).onSet(async (val) => {
+      this.log.debug('setting cooling setpoint to', val);
+      await this._client.setCoolSetpoint(z, Number(val));
+    });
+    thermo.getCharacteristic(this.Characteristic.HeatingThresholdTemperature).onSet(async (val) => {
+      this.log.debug('setting heating setpoint to', val);
+      await this._client.setHeatSetpoint(z, Number(val));
+    });
+  }
+
+  private _findOrCreateOutdoorTempSensor(t: Thermostat) {
+    const acc = this._findOrCreateAccessory(`${t.id}-outdoorTemp`, `${t.name} Outdoor Temp`);
+    const temp = acc.getService(this.Service.TemperatureSensor) || acc.addService(this.Service.TemperatureSensor);
+    temp.getCharacteristic(this.Characteristic.CurrentTemperature)
+      .onGet(() => this.thermostat(t.id).then(t => t.outdoorTemperature || 0));
+  }
+
+  private _findOrCreateAccessory(uuidstr: string, displayName: string) {
+    const uuid = this.api.hap.uuid.generate(uuidstr);
+    let acc = this.accessories.find(a => a.UUID === uuid);
+    if (!acc) {
+      acc = new this.api.platformAccessory(displayName, uuid);
+      acc.getService(this.Service.AccessoryInformation)!
+        .setCharacteristic(this.Characteristic.Manufacturer, 'Default-Manufacturer')
+        .setCharacteristic(this.Characteristic.Model, 'Default-Model')
+        .setCharacteristic(this.Characteristic.SerialNumber, 'Default-Serial');
+      this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [acc]);
+      this.accessories.push(acc);
+    }
+    return acc;
   }
 }

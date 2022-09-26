@@ -44,7 +44,7 @@ export class Thermostat {
   }
 
   get zones() {
-    return this.raw.zones.map(rz => new Zone(rz));
+    return this.raw.zones.map(rz => new Zone(this, rz));
   }
 
   zone(id: number) {
@@ -53,7 +53,7 @@ export class Thermostat {
 }
 
 export class Zone {
-  constructor(public raw: StatusZone) {
+  constructor(public thermostat: Thermostat, public raw: StatusZone) {
   }
 
   get id() {
