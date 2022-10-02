@@ -114,6 +114,7 @@ export class Platform implements DynamicPlatformPlugin {
     })
       .onSet(async (val) => {
         const zone = await this.zone(t.id, z.id);
+        this.log.debug('target temp set to', val, 'zone mode', zone.mode);
         if (zone.mode === 'COOL') {
           this.log.debug('setting cooling setpoint to', val);
           await this._client.setCoolSetpoint(zone, Number(val));
